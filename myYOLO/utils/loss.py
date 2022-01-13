@@ -43,7 +43,7 @@ class YoloLoss(nn.Module):
         _, bestbox = torch.max(ious, dim=0)  # (2, 1, 7, 7, 1) --> (1, 7, 7, 1), (1, 7, 7, 1)
 
         # look up expected prob (21st index) ** 1 or 0 **
-        identify_box = target[..., 20].unsqueeze(3)  # identity obj_i (is there an object in cell i)
+        identify_box = target[..., 20].unsqueeze(3)  # identity obj_i (is there an object in cell i) --> (1, 7, 7, 1)
         # identify_box = target[..., 20:21]
 
         # ======================== #
@@ -76,15 +76,14 @@ class YoloLoss(nn.Module):
         #   FOR OBJECT LOSS    #
         # ==================== #
 
-        # pred_box is the confidence score for the bbox with highest IoU
         pred_box = (
                 bestbox * predictions[..., 25:26] + (1 - bestbox) * predictions[..., 20:21]
-        )
+        )  # confidence score for the highest IoU box --> (1, 7, 7, 1)
 
         object_loss = self.mse(
             torch.flatten(identify_box * pred_box),
             torch.flatten(identify_box * target[..., 20:21]),
-        )
+        )  # (BATCH_SIZE, 7, 7)
 
         # ======================= #
         #   FOR NO OBJECT LOSS    #
@@ -96,11 +95,14 @@ class YoloLoss(nn.Module):
         #    torch.flatten((1 - exists_box) * target[..., 20:21], start_dim=1),
         # )
 
+        # box1 MSE
         no_object_loss = self.mse(
-            torch.flatten((1 - identify_box) * predictions[..., 20:21], start_dim=1),
+            # MSE( predicted_confidence * identify_func(1 or 0) , expected_confidence * identify_func(1 or 0) )
+            torch.flatten((1 - identify_box) * predictions[..., 20:21], start_dim=1),  # (1, 7, 7, 1) --flat--> (1, 49)
             torch.flatten((1 - identify_box) * target[..., 20:21], start_dim=1),
         )
 
+        # accumulate box2 MSE
         no_object_loss += self.mse(
             torch.flatten((1 - identify_box) * predictions[..., 25:26], start_dim=1),
             torch.flatten((1 - identify_box) * target[..., 20:21], start_dim=1)
