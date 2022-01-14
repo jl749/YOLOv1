@@ -1,4 +1,4 @@
-from YOLOv1.utils.functions import cellboxes_to_boxes, non_max_suppression, plot_image, save_checkpoint
+from utils import cellboxes_to_boxes, non_max_suppression, plot_image, save_checkpoint
 from train import *
 
 

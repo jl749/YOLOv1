@@ -11,13 +11,13 @@ from torch.utils.data import DataLoader
 
 from datasets import VOCDataset
 from model import Yolov1
+from pathlib import Path
+from utils import YoloLoss
 from utils import (
     mean_average_precision,
     get_bboxes,
     load_checkpoint,
 )
-from utils import YoloLoss
-from pathlib import Path
 
 seed = 123
 torch.manual_seed(seed)
