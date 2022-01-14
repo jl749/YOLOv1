@@ -253,10 +253,10 @@ def plot_image(image, boxes):
 
 
 def get_bboxes(
-        loader,
-        model,
-        iou_threshold,
-        threshold,
+        loader: torch.utils.data.DataLoader,
+        model: torch.nn.Module,
+        iou_threshold: float,
+        threshold: float,
         pred_format="cells",
         box_format="midpoint",
         device="cuda",
@@ -269,19 +269,19 @@ def get_bboxes(
     train_idx = 0
 
     for batch_idx, (x, labels) in enumerate(loader):
-        x = x.to(device)
-        labels = labels.to(device)
+        x = x.to(device)  # train image, (BATCH_SIZE, 3, 448, 448)
+        labels = labels.to(device)  # train expected labels, (BATCH_SIZE, 7, 7, 30)
 
         with torch.no_grad():
             predictions = model(x)
 
         batch_size = x.shape[0]
-        true_bboxes = cellboxes_to_boxes(labels)
+        true_bboxes = cellboxes_to_boxes(labels)  # [predicted_class, best_confidence, ...converted x,y,w,h ...], (BATCH_SIZE, S*S, 6)
         bboxes = cellboxes_to_boxes(predictions)
 
         for idx in range(batch_size):
             nms_boxes = non_max_suppression(
-                bboxes[idx],
+                bboxes[idx],  # (BATCH_SIZE, S*S, 6)  -->  (S*S, 6)
                 iou_threshold=iou_threshold,
                 threshold=threshold,
                 box_format=box_format,
@@ -305,56 +305,71 @@ def get_bboxes(
     return all_pred_boxes, all_true_boxes
 
 
-def convert_cellboxes(predictions, S=7):
+def convert_cellboxes(predictions, S=7):  # train/predicted labels, (BATCH_SIZE, 7, 7, 30)
     """
     Converts bounding boxes output from Yolo with
     an image split size of S into entire image ratios
-    rather than relative to cell ratios. Tried to do this
-    vectorized, but this resulted in quite difficult to read
-    code... Use as a black box? Or implement a more intuitive,
-    using 2 for loops iterating range(S) and convert them one
-    by one, resulting in a slower but more readable implementation.
+    rather than relative to cell ratios. (0~1 --scale up--> 0~S)
+    output --> (BATCH_SIZE, 7, 7, 6) [predicted_class, best_confidence, ...converted x,y,w,h ...]
     """
 
     predictions = predictions.to("cpu")
     batch_size = predictions.shape[0]
     predictions = predictions.reshape(batch_size, 7, 7, 30)
-    bboxes1 = predictions[..., 21:25]
-    bboxes2 = predictions[..., 26:30]
+    bboxes1 = predictions[..., 21:25]  # x1,y1,w1,h1
+    bboxes2 = predictions[..., 26:30]  # x2,y2,w2,h2
     scores = torch.cat(
         (predictions[..., 20].unsqueeze(0), predictions[..., 25].unsqueeze(0)), dim=0
-    )
-    best_box = scores.argmax(0).unsqueeze(-1)
-    best_boxes = bboxes1 * (1 - best_box) + best_box * bboxes2
-    cell_indices = torch.arange(7).repeat(batch_size, 7, 1).unsqueeze(-1)
-    x = 1 / S * (best_boxes[..., :1] + cell_indices)
-    y = 1 / S * (best_boxes[..., 1:2] + cell_indices.permute(0, 2, 1, 3))
-    w_y = 1 / S * best_boxes[..., 2:4]
-    converted_bboxes = torch.cat((x, y, w_y), dim=-1)
+    )  # (2, BATCH_SIZE, 7, 7) ---> 1 or 0
+
+    best_box = scores.argmax(0).unsqueeze(-1)  # (BATCH_SIZE, 7, 7, 1)
+    best_boxes = bboxes1 * (1 - best_box) + best_box * bboxes2  # only best boxes (1 or 0) per cell  --> (BATCH_SIZE, 7, 7, 1)
+    cell_indices = torch.arange(S).repeat(batch_size, S, 1).unsqueeze(-1)  # (BATCH_SIZE, 7, 7 (arange(7)), 1)
+
+    # find relative x,y coordinates (0~S --scale down--> 0~1)
+    x = 1 / S * (best_boxes[..., :1] + cell_indices)  # (BATCH_SIZE, 7, 7, 1)
+    # https://github.com/jl749/myYOLO/issues/3#issuecomment-1012911442
+    y = 1 / S * (best_boxes[..., 1:2] + cell_indices.permute(0, 2, 1, 3))  # (BATCH_SIZE, 7, 7, 1), permute swap 7, 7
+    w_h = 1 / S * best_boxes[..., 2:4]  # (BATCH_SIZE, 7, 7, 2)
+
+    converted_bboxes = torch.cat((x, y, w_h), dim=-1)  # (BATCH_SIZE, 7, 7, 4)
+
+    # among 20 classes find the highest (BATCH_SIZE, 7, 7)  --unsqueeze(-1)-->  (BATCH_SIZE, 7, 7, 1)
     predicted_class = predictions[..., :20].argmax(-1).unsqueeze(-1)
     best_confidence = torch.max(predictions[..., 20], predictions[..., 25]).unsqueeze(
         -1
-    )
+    )  # (BATCH_SIZE, 7, 7, 1)
+
+    # wrap the final converted output
     converted_preds = torch.cat(
         (predicted_class, best_confidence, converted_bboxes), dim=-1
-    )
+    )  # (BATCH_SIZE, 7, 7, 6)
 
     return converted_preds
 
 
-def cellboxes_to_boxes(out, S=7):
-    converted_pred = convert_cellboxes(out).reshape(out.shape[0], S * S, -1)
-    converted_pred[..., 0] = converted_pred[..., 0].long()
+def cellboxes_to_boxes(out, S=7):  # out = train/predicted labels, (BATCH_SIZE, 7, 7, 30)
+    """
+    (BATCH_SIZE, S, S, 6)  -->  (BATCH_SIZE, S*S, 6)
+    :param out: train/predicted labels, (BATCH_SIZE, 7, 7, 30)
+    :param S: split_size
+    :return: reshaped [predicted_class, best_confidence, ...converted x,y,w,h ...] info, (BATCH_SIZE, S*S, 6)
+    """
+    batch_size = out.shape[0]
+
+    converted_pred = convert_cellboxes(out).reshape(batch_size, S * S, -1)  # (BATCH_SIZE, 7, 7, 6)
+    converted_pred[..., 0] = converted_pred[..., 0].long()  # long() == self.to(torch.int64)
     all_bboxes = []
 
-    for ex_idx in range(out.shape[0]):
+    for ex_idx in range(batch_size):
         bboxes = []
-
+        # for every batch for every cell
         for bbox_idx in range(S * S):
+            # converted_pred[0, 0, :]  -->  (1, 6)
             bboxes.append([x.item() for x in converted_pred[ex_idx, bbox_idx, :]])
         all_bboxes.append(bboxes)
 
-    return all_bboxes
+    return all_bboxes  # (BATCH_SIZE, S*S, 6)
 
 
 def save_checkpoint(state, filename="my_checkpoint.pth.tar"):

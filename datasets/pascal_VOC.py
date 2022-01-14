@@ -26,9 +26,9 @@ class VOCDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int):  # index = which row in csv
         """
-        Get input index(image) corresponding label info
+        Get input index (image) and corresponding label info (S, S, C+5*B)
         :param index: which row in csv (image index)
-        :return:
+        :return: image, label_matrix
         """
         label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 1])  # data/labels/*.txt
         boxes = []
