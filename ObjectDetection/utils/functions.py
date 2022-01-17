@@ -79,7 +79,7 @@ def non_max_suppression(bboxes, iou_threshold: float, threshold: float, box_form
     Non Max Suppression on given bboxes (S*S, 6)
     Input: A list of Proposal boxes X, corresponding confidence scores A and overlap threshold B.
     Output: A list of filtered proposals Y.
-    :param bboxes: (S*S, 6) containing all bboxes with each bboxes, [class_pred, prob_score, x1, y1, x2, y2]
+    :param bboxes: (S*S, 6) containing all bboxes with each bboxes, [class_pred, prob_score, x, y, w, h]
     :param iou_threshold: threshold where predicted bboxes is correct
     :param threshold: threshold to remove predicted bboxes (independent of IoU)
     :param box_format: "midpoint" or "corners" used to specify bboxes
