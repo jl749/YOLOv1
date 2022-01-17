@@ -104,7 +104,7 @@ def non_max_suppression(bboxes, iou_threshold: float, threshold: float, box_form
             ) < iou_threshold
         ]
 
-        bboxes_after_nms.append(chosen_box)
+        bboxes_after_nms.append(chosen_box)  # find the best box for each class detected
 
     return bboxes_after_nms
 
