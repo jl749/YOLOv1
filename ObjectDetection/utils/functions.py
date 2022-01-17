@@ -73,39 +73,35 @@ def intersection_over_union(boxes_preds: torch.Tensor, boxes_labels: torch.Tenso
     return intersection / (box1_area + box2_area - intersection + 1e-6)
 
 
-###########################################################################
-def non_max_suppression(bboxes, iou_threshold, threshold, box_format="corners"):
+# torchvision.ops.nms()
+def non_max_suppression(bboxes, iou_threshold: float, threshold: float, box_format="corners"):
     """
-    Does Non Max Suppression given bboxes
-    Parameters:
-        bboxes (list): list of lists containing all bboxes with each bboxes
-        specified as [class_pred, prob_score, x1, y1, x2, y2]
-        iou_threshold (float): threshold where predicted bboxes is correct
-        threshold (float): threshold to remove predicted bboxes (independent of IoU)
-        box_format (str): "midpoint" or "corners" used to specify bboxes
-    Returns:
-        list: bboxes after performing NMS given a specific IoU threshold
+    Non Max Suppression on given bboxes (S*S, 6)
+    Input: A list of Proposal boxes X, corresponding confidence scores A and overlap threshold B.
+    Output: A list of filtered proposals Y.
+    :param bboxes: (S*S, 6) containing all bboxes with each bboxes, [class_pred, prob_score, x1, y1, x2, y2]
+    :param iou_threshold: threshold where predicted bboxes is correct
+    :param threshold: threshold to remove predicted bboxes (independent of IoU)
+    :param box_format: "midpoint" or "corners" used to specify bboxes
+    :return: bboxes after performing NMS given a specific IoU threshold
     """
+    assert type(bboxes) == list  # np nor tensor
 
-    assert type(bboxes) == list
-
-    bboxes = [box for box in bboxes if box[1] > threshold]
-    bboxes = sorted(bboxes, key=lambda x: x[1], reverse=True)
+    bboxes = [box for box in bboxes if box[1] > threshold]  # box[1] = obj confidence
+    bboxes = sorted(bboxes, key=lambda x: x[1], reverse=True)  # sort descending
     bboxes_after_nms = []
 
     while bboxes:
         chosen_box = bboxes.pop(0)
 
-        bboxes = [
+        bboxes = [  # create new bboxes each loop, filtering low acc bbox
             box
             for box in bboxes
-            if box[0] != chosen_box[0]
-               or intersection_over_union(
+            if box[0] != chosen_box[0] or intersection_over_union(
                 torch.tensor(chosen_box[2:]),
                 torch.tensor(box[2:]),
                 box_format=box_format,
-            )
-               < iou_threshold
+            ) < iou_threshold
         ]
 
         bboxes_after_nms.append(chosen_box)
@@ -113,6 +109,7 @@ def non_max_suppression(bboxes, iou_threshold, threshold, box_format="corners"):
     return bboxes_after_nms
 
 
+##################################################################################################
 def mean_average_precision(
         pred_boxes, true_boxes, iou_threshold=0.5, box_format="midpoint", num_classes=20
 ):
@@ -250,6 +247,7 @@ def plot_image(image, boxes):
         ax.add_patch(rect)
 
     plt.show()
+##################################################################################################
 
 
 def get_bboxes(
@@ -261,6 +259,17 @@ def get_bboxes(
         box_format="midpoint",
         device="cuda",
 ):
+    """
+    obtain bounding boxes using given dataset and model
+    :param loader: train/test DataLoader
+    :param model: model to be used for predictions
+    :param iou_threshold: iou threshold to be used on non-max suppression
+    :param threshold: object confidence threshold
+    :param pred_format:
+    :param box_format:
+    :param device:
+    :return: predicted box, expected box
+    """
     all_pred_boxes = []
     all_true_boxes = []
 
@@ -276,7 +285,8 @@ def get_bboxes(
             predictions = model(x)
 
         batch_size = x.shape[0]
-        true_bboxes = cellboxes_to_boxes(labels)  # [predicted_class, best_confidence, ...converted x,y,w,h ...], (BATCH_SIZE, S*S, 6)
+        true_bboxes = cellboxes_to_boxes(
+            labels)  # [predicted_class, best_confidence, ...converted x,y,w,h ...], (BATCH_SIZE, S*S, 6)
         bboxes = cellboxes_to_boxes(predictions)
 
         for idx in range(batch_size):
@@ -286,7 +296,8 @@ def get_bboxes(
                 threshold=threshold,
                 box_format=box_format,
             )
-
+            if len(nms_boxes) > 0:
+                print(nms_boxes)
             # if batch_idx == 0 and idx == 0:
             #    plot_image(x[idx].permute(1,2,0).to("cpu"), nms_boxes)
             #    print(nms_boxes)
@@ -309,7 +320,7 @@ def convert_cellboxes(predictions, S=7):  # train/predicted labels, (BATCH_SIZE,
     """
     Converts bounding boxes output from Yolo with
     an image split size of S into entire image ratios
-    rather than relative to cell ratios. (0~1 --scale up--> 0~S)
+    rather than relative to cell ratios. (0~1 --scale up--> 0~448)
     output --> (BATCH_SIZE, 7, 7, 6) [predicted_class, best_confidence, ...converted x,y,w,h ...]
     """
 
@@ -323,14 +334,15 @@ def convert_cellboxes(predictions, S=7):  # train/predicted labels, (BATCH_SIZE,
     )  # (2, BATCH_SIZE, 7, 7) ---> 1 or 0
 
     best_box = scores.argmax(0).unsqueeze(-1)  # (BATCH_SIZE, 7, 7, 1)
-    best_boxes = bboxes1 * (1 - best_box) + best_box * bboxes2  # only best boxes (1 or 0) per cell  --> (BATCH_SIZE, 7, 7, 1)
-    cell_indices = torch.arange(S).repeat(batch_size, S, 1).unsqueeze(-1)  # (BATCH_SIZE, 7, 7 (arange(7)), 1)
+    best_boxes = bboxes1 * (
+                1 - best_box) + best_box * bboxes2  # only best boxes (1 or 0) per cell  --> (BATCH_SIZE, 7, 7, 4)
+    cell_indices = torch.arange(S).repeat(batch_size, S, 1).unsqueeze(-1)  # (BATCH_SIZE, 7, 7->(arange(7)), 1)
 
-    # find relative x,y coordinates (0~S --scale down--> 0~1)
+    # find x,y coordinates (grid-wise 0~1 --scale down--> whole-image-wise 0~1)
     x = 1 / S * (best_boxes[..., :1] + cell_indices)  # (BATCH_SIZE, 7, 7, 1)
     # https://github.com/jl749/myYOLO/issues/3#issuecomment-1012911442
     y = 1 / S * (best_boxes[..., 1:2] + cell_indices.permute(0, 2, 1, 3))  # (BATCH_SIZE, 7, 7, 1), permute swap 7, 7
-    w_h = 1 / S * best_boxes[..., 2:4]  # (BATCH_SIZE, 7, 7, 2)
+    w_h = 1 / S * best_boxes[..., 2:4]  # (BATCH_SIZE, 7, 7, 2)  rescale w,h as x,y has been resacled too
 
     converted_bboxes = torch.cat((x, y, w_h), dim=-1)  # (BATCH_SIZE, 7, 7, 4)
 
